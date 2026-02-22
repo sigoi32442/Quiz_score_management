@@ -7,6 +7,8 @@ import re
 import copy
 import sys
 import traceback
+import zipfile
+import xml.etree.ElementTree as ET
 
 # ==========================================
 # エラーハンドリング設定
@@ -118,6 +120,15 @@ def get_ordinal_str(n):
     if s == 3: return f"{n}rd"
     return f"{n}th"
 
+def get_swedish10_wrong_increment(correct_count):
+    if correct_count <= 0:
+        return 1
+    if correct_count <= 2:
+        return 2
+    if correct_count <= 5:
+        return 3
+    return 4
+
 # ==========================================
 # 描画エンジン
 # ==========================================
@@ -140,24 +151,48 @@ class ScoreboardDrawer:
             if os.path.exists(p) and p is not None: return p
         return None
 
+    def pick_font_path(self, preferred=None, prefer_japanese=False):
+        if preferred and os.path.exists(preferred):
+            return preferred
+
+        candidates = []
+        if prefer_japanese:
+            for fname in [
+                "BIZ-UDPGothic-Regular.ttc",
+                "YuGothM.ttc",
+                "YuGothB.ttc",
+                "meiryo.ttc",
+                "meiryob.ttc",
+                "msgothic.ttc",
+            ]:
+                fp = self.find_font_path(fname)
+                if fp:
+                    candidates.append(fp)
+
+        candidates.extend([self.qa_path, self.main_path, self.rank_path, self.header_path])
+        for p in candidates:
+            if p and os.path.exists(p):
+                return p
+        return "arial.ttf"
+
     def load_fonts(self):
         try:
-            self.font_logo = ImageFont.truetype(self.header_path or "arial.ttf", 54)
-            self.font_header_sub = ImageFont.truetype(self.header_path or "arial.ttf", 54) 
-            self.font_msg = ImageFont.truetype(self.qa_path or self.main_path or "arial.ttf", 45)
-            self.font_course_display = ImageFont.truetype(self.qa_path or self.main_path or "arial.ttf", 80)
-            self.font_mark = ImageFont.truetype(self.main_path or "arial.ttf", 60)
-            self.font_main_score = ImageFont.truetype(self.rank_path or "arial.ttf", 80)
-            self.font_sub_score = ImageFont.truetype(self.rank_path or "arial.ttf", 50)
-            self.font_timer = ImageFont.truetype(self.header_path or "arial.ttf", 150)
-            self.font_semi_timer = ImageFont.truetype(self.header_path or "arial.ttf", 180) 
+            self.font_logo = ImageFont.truetype(self.pick_font_path(self.header_path, prefer_japanese=False), 54)
+            self.font_header_sub = ImageFont.truetype(self.pick_font_path(self.header_path, prefer_japanese=False), 54) 
+            self.font_msg = ImageFont.truetype(self.pick_font_path(self.qa_path or self.main_path, prefer_japanese=True), 45)
+            self.font_course_display = ImageFont.truetype(self.pick_font_path(self.qa_path or self.main_path, prefer_japanese=True), 80)
+            self.font_mark = ImageFont.truetype(self.pick_font_path(self.main_path, prefer_japanese=True), 60)
+            self.font_main_score = ImageFont.truetype(self.pick_font_path(self.rank_path, prefer_japanese=True), 80)
+            self.font_sub_score = ImageFont.truetype(self.pick_font_path(self.rank_path, prefer_japanese=True), 50)
+            self.font_timer = ImageFont.truetype(self.pick_font_path(self.header_path, prefer_japanese=False), 150)
+            self.font_semi_timer = ImageFont.truetype(self.pick_font_path(self.header_path, prefer_japanese=False), 180) 
             
             # SFのスコアフォントをOutfit (header_path) に変更
-            self.font_semi_score = ImageFont.truetype(self.header_path or "arial.ttf", 100)
+            self.font_semi_score = ImageFont.truetype(self.pick_font_path(self.header_path, prefer_japanese=False), 100)
             
-            self.font_semi_rank = ImageFont.truetype(self.rank_path or "arial.ttf", 40)
-            self.font_semi_univ = ImageFont.truetype(self.main_path or "arial.ttf", 24)
-            self.font_semi_name = ImageFont.truetype(self.main_path or "arial.ttf", 48)
+            self.font_semi_rank = ImageFont.truetype(self.pick_font_path(self.rank_path, prefer_japanese=True), 40)
+            self.font_semi_univ = ImageFont.truetype(self.pick_font_path(self.main_path, prefer_japanese=True), 24)
+            self.font_semi_name = ImageFont.truetype(self.pick_font_path(self.main_path, prefer_japanese=True), 48)
         except:
             self.font_logo = self.font_header_sub = self.font_msg = ImageFont.load_default()
             self.font_course_display = self.font_mark = self.font_main_score = ImageFont.load_default()
@@ -178,9 +213,10 @@ class ScoreboardDrawer:
     def draw_text_fit(self, draw, text, cx, bottom_y, max_w, font_path, max_size, color, stroke_w, stroke_c, align="center", x_offset=0):
         size = max_size
         font = None
+        resolved_font_path = self.pick_font_path(font_path, prefer_japanese=True)
         while size > 10:
             try:
-                font = ImageFont.truetype(font_path or "arial.ttf", size)
+                font = ImageFont.truetype(resolved_font_path, size)
             except:
                 font = ImageFont.load_default(); break
             bbox = draw.textbbox((0, 0), text, font=font)
@@ -230,6 +266,7 @@ class ScoreboardDrawer:
             lost = p.get("Swedish10_x", 0) >= 10
             win_order_num = p.get("win_order_Swedish10", 0)
         elif mode == "Freeze10":
+            lost = p.get("Freeze10_x", 0) >= 10
             win_order_num = p.get("win_order_Freeze10", 0)
         elif mode == "10up-down":
             lost = p.get("10up-down_wrong", 0) >= 2
@@ -298,7 +335,7 @@ class ScoreboardDrawer:
             sets_won = p.get("final_sets_won", 0)
             if sets_won > 0:
                 try:
-                    f_star = ImageFont.truetype(self.main_path or "arial.ttf", int(50 * scale))
+                    f_star = ImageFont.truetype(self.pick_font_path(self.main_path, prefer_japanese=True), int(50 * scale))
                 except:
                     f_star = ImageFont.load_default()
                 base_star_x = ix + photo_margin - 5
@@ -369,13 +406,13 @@ class ScoreboardDrawer:
             self.draw_text_fit(draw, display_name, ix + iw - 25, sy + ch - 26, (cw/2), self.main_path, 40, "white", 4, NAME_STROKE_COLOR, align="right")
 
         else:
-            f_rank = ImageFont.truetype(self.rank_path or "arial.ttf", int(40 * scale))
+            f_rank = ImageFont.truetype(self.pick_font_path(self.rank_path, prefer_japanese=True), int(40 * scale))
             r_w = draw.textbbox((0,0), p["rank"], font=f_rank)[2]
             draw.text((xb+cw/2-r_w/2, sy-25*scale), p["rank"], font=f_rank, fill="white", stroke_width=int(5*scale), stroke_fill=rc)
             
             pure = p["name"].replace(" ","").replace("　","")
             base_sz = 75 if len(pure) < 5 else 58
-            f_nm = ImageFont.truetype(self.main_path or "arial.ttf", int(base_sz * scale))
+            f_nm = ImageFont.truetype(self.pick_font_path(self.main_path, prefer_japanese=True), int(base_sz * scale))
             grid_h = f_nm.size + 10 * scale
             for idx, c in enumerate(pure):
                 dy = iy + 5*scale + (idx * grid_h)
@@ -383,7 +420,7 @@ class ScoreboardDrawer:
                 if len(pure)==3 and sp_idx!=-1 and idx>=sp_idx: dy += grid_h
                 draw.text((xb+cw*0.45 - draw.textbbox((0,0),c,font=f_nm)[2]/2, dy), c, font=f_nm, fill="gray" if lost and mode!="FINAL" else "white", stroke_width=int(4*scale), stroke_fill=NAME_STROKE_COLOR)
             
-            f_univ = ImageFont.truetype(self.main_path or "arial.ttf", int(24 * scale))
+            f_univ = ImageFont.truetype(self.pick_font_path(self.main_path, prefer_japanese=True), int(24 * scale))
             uy = iy + 10 * scale
             for c in p["univ"]:
                 draw.text((xb+cw*0.82-draw.textbbox((0,0),c,font=f_univ)[2]/2, uy), c, font=f_univ, fill="gray" if lost and mode!="FINAL" else "white", stroke_width=int(2*scale), stroke_fill="black")
@@ -391,11 +428,23 @@ class ScoreboardDrawer:
 
         if is_3rd and mode == "2R": return
 
-        def draw_center_scaled(text, font_path, base_size, color, offset_y=10):
-            try: f = ImageFont.truetype(font_path or "arial.ttf", int(base_size * scale))
-            except: f = ImageFont.load_default()
-            bbox = draw.textbbox((0, 0), text, font=f)
-            draw.text((xb+cw/2-(bbox[2]-bbox[0])/2, sy+ch+offset_y), text, font=f, fill=color)
+        def draw_center_scaled(text, font_path, base_size, color, offset_y=10, max_w_ratio=0.9):
+            resolved_font_path = self.pick_font_path(font_path, prefer_japanese=True)
+            max_w = max(20, int(cw * max_w_ratio))
+            size = max(10, int(base_size * scale))
+            font = None
+            while size >= 10:
+                try:
+                    font = ImageFont.truetype(resolved_font_path, size)
+                except:
+                    font = ImageFont.load_default()
+                    break
+                bbox = draw.textbbox((0, 0), text, font=font)
+                if (bbox[2] - bbox[0]) <= max_w:
+                    break
+                size -= 2
+            bbox = draw.textbbox((0, 0), text, font=font)
+            draw.text((xb+cw/2-(bbox[2]-bbox[0])/2, sy+ch+offset_y), text, font=font, fill=color)
 
         if win:
             rank_val = 0
@@ -405,34 +454,39 @@ class ScoreboardDrawer:
             elif mode == "Freeze10": rank_val = p.get("win_order_Freeze10", 0)
             elif mode == "10up-down": rank_val = p.get("win_order_10up-down", 0)
             elif mode == "EXTRA": rank_val = p.get("win_order_extra", 0)
+            elif mode == "FINAL": rank_val = p.get("win_order_final", 0)
             
-            if rank_val > 0:
+            if mode == "FINAL" and rank_val > 0:
+                draw_center_scaled("☆Champion☆", self.header_path, 72, "red", max_w_ratio=0.98)
+            elif rank_val > 0:
                 txt = get_ordinal_str(rank_val)
                 # 変更: rank_path -> header_path
-                draw_center_scaled(txt, self.header_path, 80, "red")
+                draw_center_scaled(txt, self.header_path, 80, "red", max_w_ratio=0.86)
             else:
                 txt = "WIN"
                 # 変更: rank_path -> header_path
-                draw_center_scaled(txt, self.header_path, 80, "red")
+                draw_center_scaled(txt, self.header_path, 80, "red", max_w_ratio=0.86)
         elif lost and mode != "FINAL":
             txt = "LOSE"
             # 変更: rank_path -> header_path
-            draw_center_scaled(txt, self.header_path, 80, "gray")
+            draw_center_scaled(txt, self.header_path, 92, "gray", max_w_ratio=1.10)
         else:
             if mode == "2R":
                 draw_center_scaled(str(p["score"]), self.header_path, 80, SCORE_COLOR_RENTO if p["rento"] else SCORE_COLOR_NORMAL)
                 if p["wrong"] > 0:
-                    f_mark_scaled = ImageFont.truetype(self.main_path or "arial.ttf", int(60 * scale))
+                    f_mark_scaled = ImageFont.truetype(self.pick_font_path(self.main_path, prefer_japanese=True), int(60 * scale))
                     for xi in range(p["wrong"]):
                         draw.text((xb+cw/2-25*scale+xi*50*scale-draw.textbbox((0,0),"×",font=f_mark_scaled)[2]/2, sy+ch+100*scale), "×", font=f_mark_scaled, fill="white")
             elif mode == "10by10":
                 val = p["10by10_o"] * p["10by10_x"]
                 draw_center_scaled(str(val), self.header_path, 80, SCORE_COLOR_NORMAL)
-                draw_center_scaled(f"{p['10by10_o']}  {p['10by10_x']}", self.header_path, 50, "white", 100)
+                draw_center_scaled(f"{p['10by10_o']} × {p['10by10_x']}", self.header_path, 50, "white", 100)
             elif mode == "Swedish10":
                 draw_center_scaled(str(p["Swedish10_o"]), self.header_path, 80, SCORE_COLOR_NORMAL)
                 # 修正: Swedish10の誤答数を白に変更
                 draw_center_scaled(f"{p['Swedish10_x']}x", self.header_path, 50, "white", 100)
+                next_penalty = get_swedish10_wrong_increment(p["Swedish10_o"])
+                draw_center_scaled(f"(+{next_penalty})", self.header_path, 36, "#b9d8ff", 145)
             elif mode == "Freeze10":
                 if is_frozen: 
                     # 修正: Freeze表示の変更
@@ -443,7 +497,7 @@ class ScoreboardDrawer:
             elif mode == "10up-down":
                 draw_center_scaled(str(p["10up-down_score"]), self.header_path, 80, SCORE_COLOR_NORMAL)
                 if p["10up-down_wrong"] > 0:
-                    f_mark_scaled = ImageFont.truetype(self.main_path or "arial.ttf", int(60 * scale))
+                    f_mark_scaled = ImageFont.truetype(self.pick_font_path(self.main_path, prefer_japanese=True), int(60 * scale))
                     draw.text((xb+cw/2-draw.textbbox((0,0),"×",font=f_mark_scaled)[2]/2, sy+ch+100*scale), "×", font=f_mark_scaled, fill="red")
             elif mode == "FINAL":
                 if p["final_set_lost"]:
@@ -452,14 +506,14 @@ class ScoreboardDrawer:
                 else:
                     draw_center_scaled(str(p["final_curr_o"]), self.header_path, 80, SCORE_COLOR_NORMAL)
                     if p["final_curr_x"] > 0:
-                         f_mark_scaled = ImageFont.truetype(self.main_path or "arial.ttf", int(60 * scale))
+                         f_mark_scaled = ImageFont.truetype(self.pick_font_path(self.main_path, prefer_japanese=True), int(60 * scale))
                          for xi in range(p["final_curr_x"]):
                             draw.text((xb+cw/2-25*scale+xi*50*scale-draw.textbbox((0,0),"×",font=f_mark_scaled)[2]/2, sy+ch+100*scale), "×", font=f_mark_scaled, fill="white")
 
             elif mode == "EXTRA":
                 draw_center_scaled(str(p["extra_score"]), self.header_path, 80, SCORE_COLOR_NORMAL)
 
-    def _build_header_text(self, mode, group_idx, semi_set_idx):
+    def _build_header_text(self, mode, group_idx, semi_set_idx, final_set_idx=1):
         if mode == "2R":
             return f"2nd Round Group{group_idx + 1}"
         if mode.startswith("3rd"):
@@ -467,7 +521,7 @@ class ScoreboardDrawer:
         if mode == "SEMI":
             return f"Semifinal Nine Hundred - Set {semi_set_idx}"
         if mode == "FINAL":
-            return "Final - Triple Seven"
+            return f"Final - Triple Seven Set {final_set_idx}"
         if mode == "EXTRA":
             return "Extra Round 2nd Step"
         if mode == "SF_FOLLOW":
@@ -488,29 +542,40 @@ class ScoreboardDrawer:
     def _get_obs_score_text(self, p, mode, sf_hide_scores=False):
         if mode == "2R":
             if p.get("win_order", 0) > 0:
-                return f"{get_ordinal_str(p['win_order'])} WIN"
+                return get_ordinal_str(p["win_order"])
             if p.get("wrong", 0) >= LOSE_WRONGS:
                 return "LOSE"
-            wrong_marks = "x" * p.get("wrong", 0)
+            wrong_marks = "×" * p.get("wrong", 0)
             return f"{p.get('score', 0)} {wrong_marks}".strip()
         if mode == "10by10":
             if p.get("win_order_10by10", 0) > 0:
-                return f"{get_ordinal_str(p['win_order_10by10'])} WIN"
-            return f"{p.get('10by10_o', 0)}o {p.get('10by10_x', 0)}x"
+                return get_ordinal_str(p["win_order_10by10"])
+            if p.get("10by10_x", 10) <= 4:
+                return "LOSE"
+            score = p.get("10by10_o", 0) * p.get("10by10_x", 0)
+            return f"{score} ({p.get('10by10_o', 0)} × {p.get('10by10_x', 0)})"
         if mode == "Swedish10":
             if p.get("win_order_Swedish10", 0) > 0:
-                return f"{get_ordinal_str(p['win_order_Swedish10'])} WIN"
-            return f"{p.get('Swedish10_o', 0)}o {p.get('Swedish10_x', 0)}x"
+                return get_ordinal_str(p["win_order_Swedish10"])
+            if p.get("Swedish10_x", 0) >= 10:
+                return "LOSE"
+            nxt = get_swedish10_wrong_increment(p.get("Swedish10_o", 0))
+            return f"{p.get('Swedish10_o', 0)} / {p.get('Swedish10_x', 0)}x (+{nxt})"
         if mode == "Freeze10":
             if p.get("win_order_Freeze10", 0) > 0:
-                return f"{get_ordinal_str(p['win_order_Freeze10'])} WIN"
+                return get_ordinal_str(p["win_order_Freeze10"])
+            if p.get("Freeze10_x", 0) >= 10:
+                return "LOSE"
             if p.get("Freeze10_freeze", 0) > 0:
                 return f"Freeze {p.get('Freeze10_freeze', 0)}"
-            return f"{p.get('Freeze10_o', 0)}o {p.get('Freeze10_x', 0)}x"
+            return f"{p.get('Freeze10_o', 0)} / {p.get('Freeze10_x', 0)}x"
         if mode == "10up-down":
             if p.get("win_order_10up-down", 0) > 0:
-                return f"{get_ordinal_str(p['win_order_10up-down'])} WIN"
-            return f"{p.get('10up-down_score', 0)}pt {p.get('10up-down_wrong', 0)}x"
+                return get_ordinal_str(p["win_order_10up-down"])
+            if p.get("10up-down_wrong", 0) >= 2:
+                return "LOSE"
+            wrong_marks = "×" * p.get("10up-down_wrong", 0)
+            return f"{p.get('10up-down_score', 0)} {wrong_marks}".strip()
         if mode == "SEMI":
             if p.get("semi_status") == "win":
                 return "WIN"
@@ -518,74 +583,193 @@ class ScoreboardDrawer:
                 return "LOSE"
             if sf_hide_scores:
                 return "?"
-            return f"{p.get('semi_score', 0)}pt"
+            return str(p.get("semi_score", 0))
         if mode == "FINAL":
             if p.get("win_order_final", 0) > 0:
-                return "CHAMPION"
+                return "☆Champion☆"
             if p.get("final_set_lost", False):
                 return "LOSE"
-            return f"{p.get('final_sets_won', 0)}S {p.get('final_curr_o', 0)}o {p.get('final_curr_x', 0)}x"
+            wrong_marks = "×" * p.get("final_curr_x", 0)
+            return f"{p.get('final_curr_o', 0)} {wrong_marks}".strip()
         if mode == "EXTRA":
             if p.get("win_order_extra", 0) > 0:
-                return "WIN"
+                return get_ordinal_str(p["win_order_extra"])
             if p.get("extra_wrong", 0) > 0:
                 return "LOSE"
-            return f"{p.get('extra_score', 0)}pt"
+            return str(p.get("extra_score", 0))
         return "-"
 
-    def generate_image_obs_overlay(self, players, group_idx, question_text, answer_text, timer_str="00:00", timer_alert=False, mode="2R", semi_set_idx=1, sf_hide_scores=False, question_index=None, show_timer=True):
-        im = Image.new('RGB', (IMG_WIDTH, IMG_HEIGHT), OBS_CHROMA_KEY_COLOR)
+    def _get_obs_score_color(self, p, mode, sf_hide_scores=False):
+        if mode == "2R":
+            if p.get("win_order", 0) > 0:
+                return "red"
+            if p.get("wrong", 0) >= LOSE_WRONGS:
+                return "gray"
+            if p.get("rento", False):
+                return SCORE_COLOR_RENTO
+            return SCORE_COLOR_NORMAL
+        if mode == "10by10":
+            if p.get("win_order_10by10", 0) > 0:
+                return "red"
+            if p.get("10by10_x", 10) <= 4:
+                return "gray"
+            return SCORE_COLOR_NORMAL
+        if mode == "Swedish10":
+            if p.get("win_order_Swedish10", 0) > 0:
+                return "red"
+            if p.get("Swedish10_x", 0) >= 10:
+                return "gray"
+            return SCORE_COLOR_NORMAL
+        if mode == "Freeze10":
+            if p.get("win_order_Freeze10", 0) > 0:
+                return "red"
+            if p.get("Freeze10_x", 0) >= 10:
+                return "gray"
+            if p.get("Freeze10_freeze", 0) > 0:
+                return "cyan"
+            return SCORE_COLOR_NORMAL
+        if mode == "10up-down":
+            if p.get("win_order_10up-down", 0) > 0:
+                return "red"
+            if p.get("10up-down_wrong", 0) >= 2:
+                return "gray"
+            return SCORE_COLOR_NORMAL
+        if mode == "SEMI":
+            if p.get("semi_status") == "win":
+                return "red"
+            if p.get("semi_status") == "lose":
+                return "gray"
+            if sf_hide_scores:
+                return "white"
+            return SCORE_COLOR_NORMAL
+        if mode == "FINAL":
+            if p.get("win_order_final", 0) > 0:
+                return "red"
+            if p.get("final_set_lost", False):
+                return "gray"
+            return SCORE_COLOR_NORMAL
+        if mode == "EXTRA":
+            if p.get("win_order_extra", 0) > 0:
+                return "red"
+            if p.get("extra_wrong", 0) > 0:
+                return "gray"
+            return SCORE_COLOR_NORMAL
+        return SCORE_COLOR_NORMAL
+
+    def generate_image_obs_overlay(self, players, group_idx, question_text, answer_text, timer_str="00:00", timer_alert=False, mode="2R", semi_set_idx=1, final_set_idx=1, sf_hide_scores=False, question_index=None, show_timer=True, show_question_text=True, timer_blink_on=True):
+        im = Image.new("RGB", (IMG_WIDTH, IMG_HEIGHT), OBS_CHROMA_KEY_COLOR)
         draw = ImageDraw.Draw(im)
 
-        header_text = self._build_header_text(mode, group_idx, semi_set_idx)
-        q_number_text = f"Q{question_index}" if question_index is not None else "Q"
-
-        top_h1 = 52
-        top_h2 = 110
-        top_h3 = 58
-        bottom_top = 760
+        header_text = self._build_header_text(mode, group_idx, semi_set_idx, final_set_idx=final_set_idx)
+        # OBS用では問題番号(Qxx)表示を行わない
+        # OBSでの可視エリアを確保するため、上部情報帯をコンパクト化
+        header_h = 88
+        top_h1 = header_h
+        bottom_top = 800
 
         draw.rectangle((0, 0, IMG_WIDTH, top_h1), fill="#060606")
-        draw.rectangle((0, top_h1, IMG_WIDTH, top_h1 + top_h2), fill="#111111")
-        draw.rectangle((0, top_h1 + top_h2, IMG_WIDTH, top_h1 + top_h2 + top_h3), fill="#0a0a0a")
-        draw.line([(0, top_h1 + top_h2), (IMG_WIDTH, top_h1 + top_h2)], fill="#2a2a2a", width=2)
         draw.rectangle((0, bottom_top, IMG_WIDTH, IMG_HEIGHT), fill="#2f3338")
 
-        right_margin = 240 if show_timer else 10
-        self.draw_text_fit(draw, header_text, 10, 44, IMG_WIDTH - 220, self.qa_path or self.main_path, 46, "white", 0, "black", align="left")
-        self.draw_text_fit(draw, q_number_text, IMG_WIDTH - right_margin, 44, 220, self.qa_path or self.main_path, 46, "#d7d7d7", 0, "black", align="right")
+        # ラウンド表示部分は通常UIと同じ配置・フォントで描画
+        header_text_y = 12
+        draw.text((50, header_text_y), "RUQabc", font=self.font_logo, fill="white")
+        header_w = draw.textbbox((0, 0), header_text, font=self.font_header_sub)[2]
+        draw.text((IMG_WIDTH - header_w - 50, header_text_y), header_text, font=self.font_header_sub, fill="white")
 
-        if show_timer:
-            timer_color = "#ff3333" if timer_alert else "#3cc8ff"
-            self.draw_text_fit(draw, timer_str, IMG_WIDTH - 20, 44, 220, self.header_path or self.main_path, 44, timer_color, 0, "black", align="right")
-        self.draw_text_fit(draw, f"Q. {question_text}", 14, top_h1 + top_h2 - 18, IMG_WIDTH - 28, self.qa_path or self.main_path, 52, "#f5f5f5", 0, "black", align="left")
-        self.draw_text_fit(draw, f"A. {answer_text}", IMG_WIDTH - 14, top_h1 + top_h2 + top_h3 - 10, IMG_WIDTH - 28, self.qa_path or self.main_path, 52, "#ffe45c", 0, "black", align="right")
+        def draw_fixed_pitch_timer(cx, cy, text, font, color, pitch):
+            offsets = [-1.75, -0.8, 0, 0.8, 1.75]
+            for i, char in enumerate(text):
+                if i < len(offsets):
+                    char_x = cx + offsets[i] * pitch
+                    draw.text((char_x, cy), char, font=font, fill=color, anchor="mm")
+
+        if show_timer and mode in ["10by10", "Swedish10", "Freeze10", "10up-down"] and (not timer_alert or timer_blink_on):
+            draw_fixed_pitch_timer(1640, 550, timer_str, self.font_timer, "red" if timer_alert else "#00FFFF", 100)
+        elif show_timer and mode == "SEMI" and (not timer_alert or timer_blink_on):
+            draw_fixed_pitch_timer(IMG_WIDTH // 2, 250, timer_str, self.font_semi_timer, "red" if timer_alert else "#00FFFF", 120)
+
+        show_qa = (mode != "SEMI" and mode != "SF_FOLLOW" and show_question_text)
+        qa_bottom = top_h1
+        if show_qa:
+            q_text = f"Q. {question_text}"
+            a_text = f"A. {answer_text}"
+            qa_top = top_h1
+            qa_margin_x = 50
+            qa_max_w = IMG_WIDTH - (qa_margin_x * 2)
+            line_h = (self.font_msg.size if hasattr(self.font_msg, "size") else 45) + 10
+
+            def wrapped_line_count(text, font, max_width):
+                lines = 0
+                current = ""
+                for ch in list(text):
+                    test = current + ch
+                    if draw.textbbox((0, 0), test, font=font)[2] <= max_width:
+                        current = test
+                    else:
+                        lines += 1
+                        current = ch
+                if current:
+                    lines += 1
+                return max(1, lines)
+
+            q_lines = wrapped_line_count(q_text, self.font_msg, qa_max_w)
+            a_lines = wrapped_line_count(a_text, self.font_msg, qa_max_w)
+            qa_h = (q_lines + a_lines) * line_h + 12
+            qa_bottom = qa_top + qa_h
+
+            draw.rectangle((0, qa_top, IMG_WIDTH, qa_bottom), fill="#0b0b0b")
+            q_last_y = self.draw_wrapped_text(draw, q_text, qa_margin_x, qa_top + 6, self.font_msg, "white", qa_max_w)
+            self.draw_wrapped_text(draw, a_text, qa_margin_x, q_last_y + 8, self.font_msg, "yellow", qa_max_w)
+
+        # 問題表示と出場者表示の間は常にクロマキー色で塗り戻し、透過帯を保証する
+        if qa_bottom < bottom_top:
+            draw.rectangle((0, qa_bottom, IMG_WIDTH, bottom_top), fill=OBS_CHROMA_KEY_COLOR)
 
         display_players = self._get_display_players(players, mode)
-        if not display_players:
+        filtered_players_for_drawing = []
+        if mode == "SEMI":
+            for p in display_players:
+                if p.get("semi_status") != "active" and p.get("semi_exit_set", 0) < semi_set_idx:
+                    filtered_players_for_drawing.append(None)
+                else:
+                    filtered_players_for_drawing.append(p)
+        elif mode == "EXTRA":
+            for p in display_players:
+                if p.get("name") == "---":
+                    filtered_players_for_drawing.append(None)
+                else:
+                    filtered_players_for_drawing.append(p)
+        else:
+            filtered_players_for_drawing = display_players
+
+        if not filtered_players_for_drawing:
             return im
 
         pad_x = 8
         gap = 3
-        n = len(display_players)
-        col_w = (IMG_WIDTH - (pad_x * 2) - (gap * (n - 1))) / n
+        n = len(filtered_players_for_drawing)
+        col_w = (IMG_WIDTH - (pad_x * 2) - (gap * (n - 1))) / max(1, n)
 
-        for i, p in enumerate(display_players):
+        for i, p in enumerate(filtered_players_for_drawing):
+            if p is None:
+                continue
             x1 = pad_x + i * (col_w + gap)
             x2 = x1 + col_w
             rank_color = p.get("rank_color", "#3a8f3a")
-            draw.rectangle((x1, bottom_top + 42, x2, IMG_HEIGHT - 4), fill="#4a4a4a", outline="#9a9a9a", width=1)
-            draw.rectangle((x1, bottom_top, x2, bottom_top + 42), fill=rank_color)
+            rank_band_h = 36
+            draw.rectangle((x1, bottom_top + rank_band_h, x2, IMG_HEIGHT - 4), fill="#4a4a4a", outline="#9a9a9a", width=1)
+            draw.rectangle((x1, bottom_top, x2, bottom_top + rank_band_h), fill=rank_color)
 
-            self.draw_text_fit(draw, p.get("rank", "---"), int((x1 + x2) / 2), bottom_top + 38, int(col_w - 8), self.rank_path or self.main_path, 34, "white", 1, "black", align="center")
-            self.draw_text_fit(draw, p.get("name", "---"), int((x1 + x2) / 2), bottom_top + 128, int(col_w - 8), self.main_path, 44, "white", 2, "black", align="center")
-            self.draw_text_fit(draw, p.get("univ", "---"), int((x1 + x2) / 2), bottom_top + 172, int(col_w - 8), self.main_path, 28, "#efefef", 1, "black", align="center")
+            self.draw_text_fit(draw, p.get("rank", "---"), int((x1 + x2) / 2), bottom_top + 32, int(col_w - 8), self.rank_path or self.main_path, 32, "white", 1, "black", align="center")
+            self.draw_text_fit(draw, p.get("name", "---"), int((x1 + x2) / 2), bottom_top + 98, int(col_w - 8), self.main_path, 40, "white", 2, "black", align="center")
+            self.draw_text_fit(draw, p.get("univ", "---"), int((x1 + x2) / 2), bottom_top + 134, int(col_w - 8), self.main_path, 24, "#efefef", 1, "black", align="center")
             score_txt = self._get_obs_score_text(p, mode, sf_hide_scores=sf_hide_scores)
-            self.draw_text_fit(draw, score_txt, int((x1 + x2) / 2), IMG_HEIGHT - 8, int(col_w - 8), self.header_path or self.rank_path, 42, "#fff05f", 2, "black", align="center")
+            score_color = self._get_obs_score_color(p, mode, sf_hide_scores=sf_hide_scores)
+            self.draw_text_fit(draw, score_txt, int((x1 + x2) / 2), bottom_top + 178, int(col_w - 8), self.header_path or self.rank_path, 36, score_color, 2, "black", align="center")
 
         return im
 
-    def generate_image(self, players, group_idx, question_text, answer_text, timer_str="00:00", timer_alert=False, mode="2R", semi_set_idx=1, sf_hide_scores=False, obs_overlay=False, question_index=None, show_timer=True):
+    def generate_image(self, players, group_idx, question_text, answer_text, timer_str="00:00", timer_alert=False, mode="2R", semi_set_idx=1, final_set_idx=1, sf_hide_scores=False, obs_overlay=False, question_index=None, show_timer=True, show_question_text=True, timer_blink_on=True, bg_color=None):
         if obs_overlay and mode != "SF_FOLLOW":
             return self.generate_image_obs_overlay(
                 players,
@@ -596,18 +780,22 @@ class ScoreboardDrawer:
                 timer_alert=timer_alert,
                 mode=mode,
                 semi_set_idx=semi_set_idx,
+                final_set_idx=final_set_idx,
                 sf_hide_scores=sf_hide_scores,
                 question_index=question_index,
                 show_timer=show_timer,
+                show_question_text=show_question_text,
+                timer_blink_on=timer_blink_on,
             )
 
-        im = Image.new('RGB', (IMG_WIDTH, IMG_HEIGHT), BG_COLOR)
+        base_bg = bg_color if bg_color is not None else BG_COLOR
+        im = Image.new('RGB', (IMG_WIDTH, IMG_HEIGHT), base_bg)
         draw = ImageDraw.Draw(im)
         
         logo_text = "RUQabc"
         draw.text((50, 40), logo_text, font=self.font_logo, fill="white")
         
-        header = self._build_header_text(mode, group_idx, semi_set_idx)
+        header = self._build_header_text(mode, group_idx, semi_set_idx, final_set_idx=final_set_idx)
         draw.text((IMG_WIDTH - draw.textbbox((0, 0), header, font=self.font_header_sub)[2] - 50, 40), header, font=self.font_header_sub, fill="white")
         
         # 修正: コロン間隔調整
@@ -618,14 +806,14 @@ class ScoreboardDrawer:
                     char_x = cx + offsets[i] * pitch
                     draw.text((char_x, cy), char, font=font, fill=color, anchor="mm")
 
-        if show_timer and mode in ["10by10", "Swedish10", "Freeze10", "10up-down"]:
+        if show_timer and mode in ["10by10", "Swedish10", "Freeze10", "10up-down"] and (not timer_alert or timer_blink_on):
             center_x, center_y = 1640, 550
             draw_fixed_pitch_timer(center_x, center_y, timer_str, self.font_timer, "red" if timer_alert else "#00FFFF", 100)
-        elif show_timer and mode == "SEMI":
+        elif show_timer and mode == "SEMI" and (not timer_alert or timer_blink_on):
             center_x, center_y = IMG_WIDTH // 2 , 250
             draw_fixed_pitch_timer(center_x, center_y, timer_str, self.font_semi_timer, "red" if timer_alert else "#00FFFF", 120)
 
-        if mode != "SEMI" and mode != "SF_FOLLOW":
+        if mode != "SEMI" and mode != "SF_FOLLOW" and show_question_text:
             last_y = self.draw_wrapped_text(draw, f"Q. {question_text}", 50, 140, self.font_msg, "white", IMG_WIDTH - 100)
             self.draw_wrapped_text(draw, f"A. {answer_text}", 50, last_y + 10, self.font_msg, "yellow", IMG_WIDTH - 100)
         
@@ -690,8 +878,9 @@ class ScoreboardDrawer:
 
         return im
 
-    def generate_image_3rd_round(self, players, selected_course_name, player_selections):
-        im = Image.new('RGB', (IMG_WIDTH, IMG_HEIGHT), BG_COLOR)
+    def generate_image_3rd_round(self, players, selected_course_name, player_selections, bg_color=None):
+        base_bg = bg_color if bg_color is not None else BG_COLOR
+        im = Image.new('RGB', (IMG_WIDTH, IMG_HEIGHT), base_bg)
         draw = ImageDraw.Draw(im)
         draw.text((50, 40), "RUQabc", font=self.font_logo, fill="white")
         txt = "3rd Round course select"
@@ -712,8 +901,9 @@ class ScoreboardDrawer:
             self.draw_player_plate(im, draw, p, mx+i*(cw+gap), sy, cw, ch, scale, is_3rd=True, mode="2R")
         return im
 
-    def generate_image_sf_follow(self, questions, start_idx, end_idx, offset):
-        im = Image.new('RGB', (IMG_WIDTH, IMG_HEIGHT), BG_COLOR)
+    def generate_image_sf_follow(self, questions, start_idx, end_idx, offset, show_question_text=True, bg_color=None):
+        base_bg = bg_color if bg_color is not None else BG_COLOR
+        im = Image.new('RGB', (IMG_WIDTH, IMG_HEIGHT), base_bg)
         draw = ImageDraw.Draw(im)
         draw.text((50, 40), "RUQabc", font=self.font_logo, fill="white")
         
@@ -722,23 +912,46 @@ class ScoreboardDrawer:
         
         base_y_list = [150, 420, 690] 
         
-        for i in range(3):
-            q_idx = start_idx + offset + i
-            if q_idx > end_idx or q_idx >= len(questions):
-                break
-            
-            y_pos = base_y_list[i]
-            q_data = questions[q_idx]
-            
-            # Question Text
-            next_y = self.draw_wrapped_text(draw, q_data["q"], 50, y_pos, self.font_msg, "white", IMG_WIDTH - 100)
-            
-            # Answer Text
-            self.draw_wrapped_text(draw, f"A. {q_data['a']}", 50, next_y + 10, self.font_msg, "yellow", IMG_WIDTH - 100)
-            
-            if i < 2:
-                draw.line([(50, base_y_list[i+1] - 30), (IMG_WIDTH-50, base_y_list[i+1] - 30)], fill="#444", width=2)
+        if show_question_text:
+            for i in range(3):
+                q_idx = start_idx + offset + i
+                if q_idx > end_idx or q_idx >= len(questions):
+                    break
+                
+                y_pos = base_y_list[i]
+                q_data = questions[q_idx]
+                
+                # Question Text
+                next_y = self.draw_wrapped_text(draw, q_data["q"], 50, y_pos, self.font_msg, "white", IMG_WIDTH - 100)
+                
+                # Answer Text
+                self.draw_wrapped_text(draw, f"A. {q_data['a']}", 50, next_y + 10, self.font_msg, "yellow", IMG_WIDTH - 100)
+                
+                if i < 2:
+                    draw.line([(50, base_y_list[i+1] - 30), (IMG_WIDTH-50, base_y_list[i+1] - 30)], fill="#444", width=2)
 
+        return im
+
+    def generate_image_timer_only(self, timer_str="00:00", timer_alert=False, timer_blink_on=True, bg_color=None):
+        base_bg = bg_color if bg_color is not None else BG_COLOR
+        im = Image.new("RGB", (IMG_WIDTH, IMG_HEIGHT), base_bg)
+        draw = ImageDraw.Draw(im)
+        color = "red" if timer_alert else "#00FFFF"
+        font_path = self.pick_font_path(self.header_path, prefer_japanese=False)
+
+        font = ImageFont.load_default()
+        for size in range(620, 79, -8):
+            try:
+                test_font = ImageFont.truetype(font_path, size)
+            except Exception:
+                test_font = ImageFont.load_default()
+            bbox = draw.textbbox((0, 0), timer_str, font=test_font)
+            if (bbox[2] - bbox[0]) <= (IMG_WIDTH - 80):
+                font = test_font
+                break
+
+        if not timer_alert or timer_blink_on:
+            draw.text((IMG_WIDTH // 2, IMG_HEIGHT // 2), timer_str, font=font, fill=color, anchor="mm")
         return im
 
 # ==========================================
@@ -758,6 +971,9 @@ class QuizApp(tk.Tk):
         self.player_selections_3rd = {}
         self.timer_seconds = TIMER_DEFAULT_MIN * 60 + TIMER_DEFAULT_SEC
         self.timer_running = False
+        self.timer_blink_on = True
+        self._timer_blink_job = None
+        self.question_display_started = False
         
         self.semi_set_idx = 1
         self.players_semi_9 = [get_empty_player(99) for _ in range(9)]
@@ -776,6 +992,9 @@ class QuizApp(tk.Tk):
         self.display_separate_var = tk.BooleanVar(value=DISPLAY_WINDOW_SEPARATE_DEFAULT)
         self.obs_overlay_var = tk.BooleanVar(value=OBS_OVERLAY_DEFAULT)
         self.timer_visible_var = tk.BooleanVar(value=TIMER_VISIBLE_DEFAULT)
+        self.question_visible_var = tk.BooleanVar(value=True)
+        self.next_q_manual_mode_var = tk.BooleanVar(value=False)
+        self.next_q_target_var = tk.StringVar(value="")
         self.controls_container = None
         self.control_stage = None
         self.default_font = f"{CONTROL_FONT_FAMILY} {CONTROL_FONT_SIZE}"
@@ -785,10 +1004,217 @@ class QuizApp(tk.Tk):
         self.control_scale = 1.0
         self._control_scale_job = None
         self.base_tk_scaling = float(self.tk.call("tk", "scaling"))
+        self.lbl_curr_q_no = None
+        self.lbl_next_q_no = None
+        self.entry_next_q_no = None
+        self.btn_apply_next_q = None
+        self.cb_name_labels = []
 
         self.drawer = ScoreboardDrawer(); self._update_job = None
         self.setup_ui()
         self.refresh_ui()
+
+    def _read_rows_from_csv(self, fp):
+        last_error = None
+        for enc in ["utf-8-sig", "shift_jis", "cp932", "utf-8"]:
+            try:
+                rows = []
+                with open(fp, "r", encoding=enc, newline="") as f:
+                    reader = csv.reader(f)
+                    for row in reader:
+                        if not row:
+                            continue
+                        if len(row) == 1:
+                            row = row[0].replace('"', "").split(",")
+                        rows.append([str(c).strip() for c in row])
+                return rows
+            except Exception as e:
+                last_error = e
+        raise last_error if last_error else ValueError("CSVの読み込みに失敗しました。")
+
+    def _col_idx_from_cell_ref(self, ref):
+        m = re.match(r"([A-Za-z]+)", ref or "")
+        if not m:
+            return None
+        letters = m.group(1).upper()
+        idx = 0
+        for ch in letters:
+            idx = idx * 26 + (ord(ch) - ord("A") + 1)
+        return idx - 1
+
+    def _read_rows_from_xlsx(self, fp):
+        ns_main = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+        ns_rel_doc = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+        ns_rel_pkg = "{http://schemas.openxmlformats.org/package/2006/relationships}"
+
+        with zipfile.ZipFile(fp, "r") as z:
+            names = set(z.namelist())
+
+            shared_strings = []
+            if "xl/sharedStrings.xml" in names:
+                ss_root = ET.fromstring(z.read("xl/sharedStrings.xml"))
+                for si in ss_root.findall(f"{ns_main}si"):
+                    txt = "".join((t.text or "") for t in si.iter(f"{ns_main}t"))
+                    shared_strings.append(txt)
+
+            sheet_path = None
+            if "xl/workbook.xml" in names and "xl/_rels/workbook.xml.rels" in names:
+                wb_root = ET.fromstring(z.read("xl/workbook.xml"))
+                first_sheet = wb_root.find(f"{ns_main}sheets/{ns_main}sheet")
+                if first_sheet is not None:
+                    rid = first_sheet.attrib.get(f"{ns_rel_doc}id")
+                    rels_root = ET.fromstring(z.read("xl/_rels/workbook.xml.rels"))
+                    for rel in rels_root.findall(f"{ns_rel_pkg}Relationship"):
+                        if rel.attrib.get("Id") == rid:
+                            target = rel.attrib.get("Target", "")
+                            if target.startswith("/"):
+                                sheet_path = target.lstrip("/")
+                            else:
+                                sheet_path = f"xl/{target.lstrip('/')}"
+                            break
+
+            if not sheet_path or sheet_path not in names:
+                candidates = sorted(n for n in names if n.startswith("xl/worksheets/sheet") and n.endswith(".xml"))
+                if not candidates:
+                    raise ValueError("xlsx内にワークシートが見つかりません。")
+                sheet_path = candidates[0]
+
+            ws_root = ET.fromstring(z.read(sheet_path))
+            rows = []
+            for r in ws_root.findall(f".//{ns_main}row"):
+                row_vals = []
+                for c in r.findall(f"{ns_main}c"):
+                    col_idx = self._col_idx_from_cell_ref(c.attrib.get("r", "")) 
+                    if col_idx is None:
+                        col_idx = len(row_vals)
+                    while len(row_vals) < col_idx:
+                        row_vals.append("")
+
+                    t = c.attrib.get("t")
+                    v = c.find(f"{ns_main}v")
+                    is_elem = c.find(f"{ns_main}is")
+                    value = ""
+                    if t == "s":
+                        try:
+                            si = int(v.text) if v is not None and v.text is not None else -1
+                            value = shared_strings[si] if 0 <= si < len(shared_strings) else ""
+                        except Exception:
+                            value = ""
+                    elif t == "inlineStr":
+                        value = "".join((t_elem.text or "") for t_elem in is_elem.iter(f"{ns_main}t")) if is_elem is not None else ""
+                    elif t == "b":
+                        value = "TRUE" if (v is not None and v.text == "1") else "FALSE"
+                    else:
+                        value = v.text if v is not None and v.text is not None else ""
+
+                    row_vals.append(str(value).strip())
+
+                if row_vals:
+                    rows.append(row_vals)
+            return rows
+
+    def _read_rows_from_file(self, fp):
+        ext = os.path.splitext(fp)[1].lower()
+        if ext == ".xlsx":
+            return self._read_rows_from_xlsx(fp)
+        return self._read_rows_from_csv(fp)
+
+    def _parse_question_no(self, raw):
+        txt = str(raw or "").strip().translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+        if not txt or not txt.isdigit():
+            return None
+        return int(txt)
+
+    def _get_manual_next_question_no(self):
+        if not self.questions:
+            return None
+        no = self._parse_question_no(self.next_q_target_var.get())
+        if no is None:
+            return None
+        if 1 <= no <= len(self.questions):
+            return no
+        return None
+
+    def _get_current_display_question_no(self):
+        if not self.questions:
+            return None
+        if not self.question_display_started:
+            return None
+        if self.mode == "3RD":
+            return None
+        if self.mode == "SF_FOLLOW":
+            no = self.sf_follow_start + self.sf_follow_cursor + 1
+            if 1 <= no <= len(self.questions):
+                return no
+            return None
+        return self.current_q_idx + 1
+
+    def _get_auto_next_question_no(self):
+        if not self.questions or self.mode == "3RD":
+            return None
+        if not self.question_display_started:
+            if self.mode == "SF_FOLLOW":
+                no = self.sf_follow_start + 1
+                if no < 1:
+                    no = 1
+                if no > len(self.questions):
+                    no = len(self.questions)
+                return no
+            return self.current_q_idx + 1
+        if self.mode == "SF_FOLLOW":
+            no = self.sf_follow_start + self.sf_follow_cursor + 4
+            if no < 1:
+                no = 1
+            if no > len(self.questions):
+                no = len(self.questions)
+            return no
+        return ((self.current_q_idx + 1) % len(self.questions)) + 1
+
+    def _update_question_nav_status(self):
+        if self.lbl_curr_q_no is None or self.lbl_next_q_no is None:
+            return
+
+        total = len(self.questions)
+        curr_no = self._get_current_display_question_no()
+        if curr_no is None or total == 0:
+            self.lbl_curr_q_no.config(text="表示中No: -")
+        else:
+            self.lbl_curr_q_no.config(text=f"表示中No: {curr_no}/{total}")
+
+        manual_on = self.next_q_manual_mode_var.get()
+        manual_no = self._get_manual_next_question_no()
+        if manual_on and manual_no is not None:
+            next_text = f"次表示No: {manual_no}/{total} (指定)"
+        elif manual_on and total > 0:
+            next_text = f"次表示No: 未設定 (1-{total})"
+        else:
+            auto_no = self._get_auto_next_question_no()
+            if auto_no is None or total == 0:
+                next_text = "次表示No: -"
+            else:
+                next_text = f"次表示No: {auto_no}/{total}"
+        self.lbl_next_q_no.config(text=next_text)
+
+        state = "normal" if manual_on else "disabled"
+        if self.entry_next_q_no is not None:
+            self.entry_next_q_no.config(state=state)
+        if self.btn_apply_next_q is not None:
+            self.btn_apply_next_q.config(state=state)
+
+    def on_next_q_mode_toggle(self):
+        self._update_question_nav_status()
+
+    def apply_next_question_target(self):
+        if not self.questions:
+            messagebox.showwarning("問題未読込", "先に「問題読込」で問題を読み込んでください。")
+            return
+        no = self._get_manual_next_question_no()
+        if no is None:
+            messagebox.showerror("入力エラー", f"次に表示する問題番号は 1 から {len(self.questions)} で指定してください。")
+            return
+        if not self.next_q_manual_mode_var.get():
+            self.next_q_manual_mode_var.set(True)
+        self._update_question_nav_status()
 
     def _build_view_frame(self, parent, fill="x", expand=False, before=None):
         if self.view_frame is not None:
@@ -828,6 +1254,9 @@ class QuizApp(tk.Tk):
         self.schedule_image_update()
 
     def toggle_timer_visibility(self):
+        self.schedule_image_update()
+
+    def toggle_question_visibility(self):
         self.schedule_image_update()
 
     def _show_display_window(self):
@@ -930,6 +1359,8 @@ class QuizApp(tk.Tk):
         
         self.btn_sf_follow = tk.Button(nav, text="SFフォロー", width=9, bg="#4682b4", fg="white", command=lambda: self.switch_tab("SF_FOLLOW"))
         self.btn_sf_follow.pack(side="left", padx=1, pady=5); self.tab_btns.append(self.btn_sf_follow)
+        self.btn_timer_only = tk.Button(nav, text="Timer", width=7, bg="#20b2aa", fg="white", command=lambda: self.switch_tab("TIMER_ONLY"))
+        self.btn_timer_only.pack(side="left", padx=1, pady=5); self.tab_btns.append(self.btn_timer_only)
 
         self.btn_final = tk.Button(nav, text="Final", width=6, bg="#dc143c", fg="white", command=lambda: self.switch_tab("FINAL"))
         self.btn_final.pack(side="left", padx=1, pady=5); self.tab_btns.append(self.btn_final)
@@ -947,6 +1378,8 @@ class QuizApp(tk.Tk):
         timer_f = tk.Frame(self.tool, bg="#ddd", padx=5); timer_f.pack(side="right", padx=10)
         tk.Checkbutton(timer_f, text="表示", variable=self.timer_visible_var,
                        command=self.toggle_timer_visibility, bg="#ddd").pack(side="right", padx=(8, 0))
+        tk.Checkbutton(timer_f, text="問題表示", variable=self.question_visible_var,
+                       command=self.toggle_question_visibility, bg="#ddd").pack(side="right", padx=(8, 0))
         tk.Label(timer_f, text="Timer:", bg="#ddd").pack(side="left")
         self.entry_min = tk.Entry(timer_f, width=3); self.entry_min.insert(0, str(TIMER_DEFAULT_MIN)); self.entry_min.pack(side="left")
         tk.Label(timer_f, text=":", bg="#ddd").pack(side="left")
@@ -960,6 +1393,22 @@ class QuizApp(tk.Tk):
         prog = tk.Frame(self.score_ctrls, bg="#eee"); prog.pack(side="top", fill="x")
         tk.Button(prog, text="スルー", width=12, command=self.next_question_manual).pack(side="left", padx=5, pady=2)
         tk.Button(prog, text="Undo", width=12, command=self.undo).pack(side="left", pady=2)
+        self.lbl_curr_q_no = tk.Label(prog, text="表示中No: -", bg="#eee")
+        self.lbl_curr_q_no.pack(side="left", padx=(12, 4))
+        self.lbl_next_q_no = tk.Label(prog, text="次表示No: -", bg="#eee")
+        self.lbl_next_q_no.pack(side="left", padx=(0, 8))
+        tk.Checkbutton(
+            prog,
+            text="次No指定モード",
+            variable=self.next_q_manual_mode_var,
+            command=self.on_next_q_mode_toggle,
+            bg="#eee"
+        ).pack(side="left", padx=(0, 3))
+        self.entry_next_q_no = tk.Entry(prog, width=5, textvariable=self.next_q_target_var)
+        self.entry_next_q_no.pack(side="left", padx=(0, 3))
+        self.entry_next_q_no.bind("<Return>", lambda _e: self.apply_next_question_target())
+        self.btn_apply_next_q = tk.Button(prog, text="反映", width=6, command=self.apply_next_question_target)
+        self.btn_apply_next_q.pack(side="left", padx=(0, 3))
         
         self.btn_grid_f = tk.Frame(self.score_ctrls, bg="#eee"); self.btn_grid_f.pack(side="top", fill="x")
         self.player_widgets = []
@@ -984,10 +1433,20 @@ class QuizApp(tk.Tk):
         tk.Button(self.course_ctrls, text="進出者を更新", command=self.update_3rd_list).pack(pady=2)
         c_grid = tk.Frame(self.course_ctrls, bg="#eee"); c_grid.pack()
         self.cb_list = []
+        self.cb_name_labels = []
         for i in range(20):
             f = tk.Frame(c_grid, relief="groove", borderwidth=1, bg="white"); f.grid(row=i//10, column=i%10, padx=1, pady=1)
-            tk.Label(f, text=f"{i+1}", font=self.small_font, bg="white").pack(side="left")
-            cb = ttk.Combobox(f, values=COURSES, state="readonly", width=8); cb.set("未選択"); cb.bind("<<ComboboxSelected>>", lambda e, idx=i: self.select_course_3rd(idx)); cb.pack(side="left"); self.cb_list.append(cb)
+            top = tk.Frame(f, bg="white")
+            top.pack(side="top", fill="x")
+            tk.Label(top, text=f"{i+1}", font=self.small_font, bg="white").pack(side="left")
+            cb = ttk.Combobox(top, values=COURSES, state="readonly", width=8)
+            cb.set("未選択")
+            cb.bind("<<ComboboxSelected>>", lambda e, idx=i: self.select_course_3rd(idx))
+            cb.pack(side="left")
+            self.cb_list.append(cb)
+            nm = tk.Label(f, text="---", font=self.small_font, bg="white", width=12, anchor="w")
+            nm.pack(side="top", fill="x", padx=2, pady=(1, 0))
+            self.cb_name_labels.append(nm)
 
         self.special_ctrl_lbl = tk.Label(self.special_ctrls, text="", font=self.bold_font, bg="#eee")
         self.special_ctrl_lbl.pack(side="left", padx=10)
@@ -1023,6 +1482,7 @@ class QuizApp(tk.Tk):
         self.update_idletasks()
         self._capture_control_base_size()
         self.control_stage.bind("<Configure>", self._schedule_control_scale)
+        self._update_question_nav_status()
         self.schedule_image_update()
 
     def refresh_ui(self):
@@ -1032,16 +1492,15 @@ class QuizApp(tk.Tk):
                 p = players[i]
                 self.player_widgets[i]["frame"].grid()
                 
-                status_suffix = ""
-                if self.mode == "SEMI":
-                    if p["semi_status"] == "win": status_suffix = " [WIN]"
-                    elif p["semi_status"] == "lose": status_suffix = " [LOSE]"
+                status_suffix = self._get_status_suffix(p)
                 
                 self.player_widgets[i]["name"].config(text=f"{p['rank']} {p['name']}{status_suffix}")
                 
                 txt = ""
                 if self.mode == "10by10": txt = f"{p['10by10_o'] * p['10by10_x']} ({p['10by10_o']}○{p['10by10_x']}×)"
-                elif self.mode == "Swedish10": txt = f"{p['Swedish10_o']}○ {p['Swedish10_x']}×"
+                elif self.mode == "Swedish10":
+                    nxt = get_swedish10_wrong_increment(p["Swedish10_o"])
+                    txt = f"{p['Swedish10_o']}○ {p['Swedish10_x']}× (+{nxt})"
                 elif self.mode == "Freeze10": txt = f"{p['Freeze10_o']}○ {p['Freeze10_x']}×"
                 elif self.mode == "10up-down": txt = f"{p['10up-down_score']}pts {p['10up-down_wrong']}×"
                 elif self.mode == "SEMI": txt = f"{p['semi_score']} pts"
@@ -1052,6 +1511,15 @@ class QuizApp(tk.Tk):
                 self.player_widgets[i]["score"].config(text=txt)
             else:
                 self.player_widgets[i]["frame"].grid_remove()
+
+        if self.cb_name_labels:
+            for i, lbl in enumerate(self.cb_name_labels):
+                if i < len(self.players_3rd_20):
+                    nm = self.players_3rd_20[i].get("name", "---")
+                    lbl.config(text=nm if nm else "---")
+                else:
+                    lbl.config(text="---")
+        self._update_question_nav_status()
         self.schedule_image_update()
 
     def set_timer_val(self):
@@ -1059,15 +1527,22 @@ class QuizApp(tk.Tk):
             m = int(self.entry_min.get())
             s = int(self.entry_sec.get())
             self.timer_seconds = m * 60 + s
+            self._set_timer_blink_active(self.timer_seconds == 0 and not self.timer_running)
             self.refresh_ui()
         except: pass
 
     def toggle_timer(self):
         self.timer_running = not self.timer_running
-        if self.timer_running: self.update_timer_loop()
+        if self.timer_running:
+            self._set_timer_blink_active(False)
+            self.timer_blink_on = True
+            self.update_timer_loop()
+        elif self.timer_seconds == 0:
+            self._set_timer_blink_active(True)
 
     def reset_timer(self):
         self.timer_running = False
+        self._set_timer_blink_active(False)
         self.set_timer_val()
         self.refresh_ui()
 
@@ -1076,10 +1551,34 @@ class QuizApp(tk.Tk):
             if self.timer_seconds > 0:
                 self.timer_seconds -= 1
                 self.refresh_ui()
-                self.after(1000, self.update_timer_loop)
+                if self.timer_seconds == 0:
+                    self.timer_running = False
+                    self._set_timer_blink_active(True)
+                else:
+                    self.after(1000, self.update_timer_loop)
             else:
                 self.timer_running = False 
+                self._set_timer_blink_active(True)
                 self.refresh_ui()
+
+    def _set_timer_blink_active(self, active):
+        if not active:
+            if self._timer_blink_job:
+                self.after_cancel(self._timer_blink_job)
+                self._timer_blink_job = None
+            self.timer_blink_on = True
+            return
+        if self._timer_blink_job is None:
+            self._timer_blink_job = self.after(450, self._timer_blink_tick)
+
+    def _timer_blink_tick(self):
+        self._timer_blink_job = None
+        if self.timer_running or self.timer_seconds != 0:
+            self.timer_blink_on = True
+            return
+        self.timer_blink_on = not self.timer_blink_on
+        self.refresh_ui()
+        self._timer_blink_job = self.after(450, self._timer_blink_tick)
 
     def get_timer_str(self):
         m = self.timer_seconds // 60
@@ -1095,6 +1594,83 @@ class QuizApp(tk.Tk):
         for o in range(1, 13): selected.extend(sorted(winners[o], key=lambda x: x["rank_num"]))
         while len(selected) < 20: selected.append(get_empty_player(99))
         self.players_3rd_20 = selected[:20]; self.refresh_ui()
+
+    def _semi_round_started(self):
+        for p in self.players_semi_9:
+            if p.get("rank_num", 99) == 99:
+                continue
+            if p.get("semi_score", 0) != 0:
+                return True
+            if p.get("semi_status", "active") != "active":
+                return True
+            if p.get("semi_exit_set", 0) != 0:
+                return True
+            if p.get("win_order_semi", 0) != 0:
+                return True
+        return False
+
+    def _build_semi_slot_player(self, src_player, prev_state=None):
+        p = copy.deepcopy(src_player)
+        if prev_state:
+            p["semi_score"] = prev_state.get("semi_score", 0)
+            p["win_order_semi"] = prev_state.get("win_order_semi", 0)
+            p["semi_status"] = prev_state.get("semi_status", "active")
+            p["semi_exit_set"] = prev_state.get("semi_exit_set", 0)
+        else:
+            p["semi_score"] = 0
+            p["win_order_semi"] = 0
+            p["semi_status"] = "active"
+            p["semi_exit_set"] = 0
+        return p
+
+    def _get_3rd_winners_for_semi(self):
+        course_win_fields = [
+            "win_order_10by10",
+            "win_order_Swedish10",
+            "win_order_Freeze10",
+            "win_order_10up-down",
+        ]
+        winners = []
+        seen_rank = set()
+        for wf in course_win_fields:
+            cands = [p for p in self.players_3rd_20 if p.get(wf, 0) > 0 and p.get("rank_num", 99) != 99]
+            cands.sort(key=lambda p: (p.get(wf, 999), p.get("rank_num", 999)))
+            for p in cands:
+                r = p.get("rank_num", 99)
+                if r in seen_rank:
+                    continue
+                seen_rank.add(r)
+                winners.append(p)
+        return winners
+
+    def _get_extra_winner_for_semi(self):
+        cands = [p for p in self.players_extra_12 if p.get("win_order_extra", 0) > 0 and p.get("rank_num", 99) != 99]
+        if not cands:
+            return None
+        cands.sort(key=lambda p: (p.get("win_order_extra", 999), p.get("rank_num", 999)))
+        return cands[0]
+
+    def sync_semi_players_from_winners(self, force=False):
+        if not force and self._semi_round_started():
+            return
+
+        third_winners = self._get_3rd_winners_for_semi()
+        extra_winner = self._get_extra_winner_for_semi()
+        if not third_winners and extra_winner is None and not force:
+            return
+
+        prev_by_rank = {p.get("rank_num"): p for p in self.players_semi_9 if p.get("rank_num", 99) != 99}
+        new_list = [get_empty_player(99) for _ in range(9)]
+
+        for i, p in enumerate(third_winners[:8]):
+            prev = prev_by_rank.get(p.get("rank_num"))
+            new_list[i] = self._build_semi_slot_player(p, prev_state=prev)
+
+        if extra_winner is not None:
+            prev = prev_by_rank.get(extra_winner.get("rank_num"))
+            new_list[8] = self._build_semi_slot_player(extra_winner, prev_state=prev)
+
+        self.players_semi_9 = new_list
 
     def select_course_3rd(self, p_idx):
         c_name = self.cb_list[p_idx].get()
@@ -1115,6 +1691,13 @@ class QuizApp(tk.Tk):
             p["final_curr_x"] = 0
             p["final_set_lost"] = False
         self.refresh_ui()
+
+    def get_current_final_set_index(self):
+        max_sets_won = max((p.get("final_sets_won", 0) for p in self.players_final_3), default=0)
+        champion_exists = any(p.get("win_order_final", 0) > 0 for p in self.players_final_3)
+        if champion_exists:
+            return max(1, min(3, max_sets_won))
+        return max(1, min(3, max_sets_won + 1))
 
     def set_sf_follow_range(self):
         try:
@@ -1150,15 +1733,54 @@ class QuizApp(tk.Tk):
         if self.mode not in ["SEMI", "EXTRA"]:
             messagebox.showinfo("info", "このモードでは手動設定は使用しません")
             return
+        if self.mode == "SEMI":
+            self.sync_semi_players_from_winners()
             
         win = tk.Toplevel(self)
         win.title("参加者・スコア手動設定")
-        win.geometry("500x600")
+        win.geometry("980x600" if self.mode == "EXTRA" else "760x600")
         win.transient(self)
         win.grab_set()
         
         current_list = self.players_semi_9 if self.mode == "SEMI" else self.players_extra_12
+        rank_to_player = {}
+        for g in self.all_groups_data:
+            for pl in g:
+                rank_to_player[pl.get("rank_num")] = pl
         entries = []
+        is_extra = (self.mode == "EXTRA")
+        
+        def get_name_by_rank_text(rank_text):
+            txt = str(rank_text or "").strip()
+            if not txt.isdigit():
+                return "---"
+            src = rank_to_player.get(int(txt))
+            if not src or src.get("name", "---") == "---":
+                return "---"
+            return src.get("name", "---") or "---"
+
+        def has_registered_player(rank_text):
+            txt = str(rank_text or "").strip()
+            if not txt.isdigit():
+                return False
+            src = rank_to_player.get(int(txt))
+            return bool(src) and src.get("name", "---") != "---"
+
+        def split_univ_grade(univ_text):
+            txt = str(univ_text or "").strip()
+            m = re.match(r"^(.*?)(\d+年)$", txt)
+            if m:
+                return m.group(1), m.group(2)
+            return txt, ""
+
+        def normalize_grade(grade_text):
+            g = str(grade_text or "").strip().translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+            if not g:
+                return ""
+            if g.endswith("年"):
+                num = g[:-1]
+                return f"{num}年" if num.isdigit() else g
+            return f"{g}年" if g.isdigit() else g
         
         tk.Label(win, text=f"{self.mode} 手動編集").pack(pady=5)
         
@@ -1166,9 +1788,14 @@ class QuizApp(tk.Tk):
         f_list.pack(fill="both", expand=True, padx=10)
         
         tk.Label(f_list, text="No.", width=5).grid(row=0, column=1)
-        tk.Label(f_list, text="画像", width=5).grid(row=0, column=2)
-        tk.Label(f_list, text="正解/Pts", width=8).grid(row=0, column=3)
-        tk.Label(f_list, text="誤答/✕", width=8).grid(row=0, column=4)
+        tk.Label(f_list, text="氏名", width=18).grid(row=0, column=2)
+        tk.Label(f_list, text="画像", width=5).grid(row=0, column=3)
+        tk.Label(f_list, text="正解/Pts", width=8).grid(row=0, column=4)
+        tk.Label(f_list, text="誤答/✕", width=8).grid(row=0, column=5)
+        if is_extra:
+            tk.Label(f_list, text="手動氏名", width=12).grid(row=0, column=6)
+            tk.Label(f_list, text="手動大学", width=12).grid(row=0, column=7)
+            tk.Label(f_list, text="手動学年", width=8).grid(row=0, column=8)
 
         first_entry = None
         for i, p in enumerate(current_list):
@@ -1177,54 +1804,118 @@ class QuizApp(tk.Tk):
             e_rank = tk.Entry(f_list, width=6)
             if p["rank_num"] != 99: e_rank.insert(0, str(p["rank_num"]))
             e_rank.grid(row=i+1, column=1)
+
+            initial_name = p.get("name", "---") if p.get("name", "---") != "---" else get_name_by_rank_text(e_rank.get())
+            name_var = tk.StringVar(value=initial_name)
+            tk.Label(f_list, textvariable=name_var, width=18, anchor="w", bg="white").grid(row=i+1, column=2, padx=(4, 4))
+
+            e_manual_name = None
+            e_manual_univ = None
+            e_manual_grade = None
+            if is_extra:
+                pre_name = p.get("name", "")
+                pre_univ, pre_grade = split_univ_grade(p.get("univ", ""))
+                if p.get("rank_num", 99) != 99:
+                    pre_name = ""
+                    pre_univ = ""
+                    pre_grade = ""
+                e_manual_name = tk.Entry(f_list, width=12)
+                e_manual_name.insert(0, pre_name if pre_name != "---" else "")
+                e_manual_name.grid(row=i+1, column=6)
+                e_manual_univ = tk.Entry(f_list, width=12)
+                e_manual_univ.insert(0, pre_univ if pre_univ != "---" else "")
+                e_manual_univ.grid(row=i+1, column=7)
+                e_manual_grade = tk.Entry(f_list, width=8)
+                e_manual_grade.insert(0, pre_grade)
+                e_manual_grade.grid(row=i+1, column=8)
+
+            def bind_rank_name_sync(rank_entry, name_string_var, manual_name_entry=None, manual_univ_entry=None, manual_grade_entry=None):
+                def _sync(_event=None):
+                    rank_txt = str(rank_entry.get() or "").strip()
+                    matched = has_registered_player(rank_txt)
+                    name_string_var.set(get_name_by_rank_text(rank_txt))
+                    if manual_name_entry is not None:
+                        state = "disabled" if matched else "normal"
+                        manual_name_entry.config(state=state)
+                        manual_univ_entry.config(state=state)
+                        manual_grade_entry.config(state=state)
+                rank_entry.bind("<KeyRelease>", _sync)
+                rank_entry.bind("<FocusOut>", _sync)
+                _sync()
+            bind_rank_name_sync(e_rank, name_var, e_manual_name, e_manual_univ, e_manual_grade)
             
             def sel_img(idx=i):
                 fp = filedialog.askopenfilename(filetypes=[("Image Files", "*.jpg;*.png;*.jpeg")])
                 if fp:
-                    entries[idx][4] = fp
+                    entries[idx]["photo_path"] = fp
                     messagebox.showinfo("OK", f"Slot {idx+1} に画像を設定しました")
 
             btn_img = tk.Button(f_list, text="...", command=lambda ix=i: sel_img(ix), width=3)
-            btn_img.grid(row=i+1, column=2)
+            btn_img.grid(row=i+1, column=3)
             
             e_o = tk.Entry(f_list, width=8)
             val_o = 0
             if self.mode == "SEMI": val_o = p["semi_score"]
             elif self.mode == "EXTRA": val_o = p["extra_score"]
             e_o.insert(0, str(val_o))
-            e_o.grid(row=i+1, column=3)
+            e_o.grid(row=i+1, column=4)
             
             e_x = tk.Entry(f_list, width=8)
             val_x = 0
             if self.mode == "EXTRA": val_x = p["extra_wrong"]
             e_x.insert(0, str(val_x))
-            e_x.grid(row=i+1, column=4)
+            e_x.grid(row=i+1, column=5)
             if self.mode == "SEMI": e_x.config(state="disabled")
 
-            entries.append([e_rank, e_o, e_x, btn_img, p["photo_path"]])
+            entries.append({
+                "rank": e_rank,
+                "score": e_o,
+                "wrong": e_x,
+                "img_btn": btn_img,
+                "photo_path": p["photo_path"],
+                "manual_name": e_manual_name,
+                "manual_univ": e_manual_univ,
+                "manual_grade": e_manual_grade,
+            })
             
             if i == 0: first_entry = e_rank
             
         def apply():
             loaded_check = any(p["name"] != "---" for g in self.all_groups_data for p in g)
-            if not loaded_check:
+            if self.mode == "SEMI" and not loaded_check:
                 messagebox.showerror("エラー", "まだCSVファイルが読み込まれていません。\n先に「48名読込」を行ってください。")
                 win.destroy()
                 return
 
             new_list = []
             for item in entries:
-                e_r, e_o, e_x, _, photo_p = item
+                e_r = item["rank"]
+                e_o = item["score"]
+                e_x = item["wrong"]
+                photo_p = item["photo_path"]
                 rank_val = e_r.get().strip()
                 player_obj = get_empty_player(99)
                 
                 if rank_val.isdigit():
                     r_num = int(rank_val)
-                    for g in range(NUM_GROUPS):
-                        for pl in self.all_groups_data[g]:
-                            if pl["rank_num"] == r_num:
-                                player_obj = copy.deepcopy(pl)
-                                break
+                    src_player = rank_to_player.get(r_num)
+                    if src_player is not None and src_player.get("name", "---") != "---":
+                        player_obj = copy.deepcopy(src_player)
+                    elif self.mode == "EXTRA":
+                        player_obj = get_empty_player(r_num)
+                        player_obj["rank_num"] = r_num
+                        player_obj["rank"] = get_ordinal_str(r_num)
+                elif self.mode == "EXTRA":
+                    player_obj = get_empty_player(99)
+
+                if self.mode == "EXTRA" and player_obj.get("name", "---") == "---":
+                    m_name = item["manual_name"].get().strip() if item["manual_name"] is not None else ""
+                    m_univ = item["manual_univ"].get().strip() if item["manual_univ"] is not None else ""
+                    m_grade = normalize_grade(item["manual_grade"].get()) if item["manual_grade"] is not None else ""
+                    if m_name:
+                        player_obj["name"] = m_name
+                    if m_univ or m_grade:
+                        player_obj["univ"] = f"{m_univ}{m_grade}"
                 
                 player_obj["photo_path"] = photo_p
 
@@ -1274,8 +1965,12 @@ class QuizApp(tk.Tk):
             self.update_3rd_list()
         elif target == "SF_FOLLOW":
             self.sf_follow_ctrls.pack(fill="both", expand=True)
+        elif target == "TIMER_ONLY":
+            self.special_ctrl_lbl.config(text="タイマーモード（表示UIはタイマーのみ表示）")
+            self.special_ctrls.pack(side="top", fill="x")
         else:
             if target == "SEMI":
+                self.sync_semi_players_from_winners()
                 self.special_ctrl_lbl.config(text="準決勝 Nine Hundred")
                 self.special_ctrls.pack(side="top", fill="x")
                 self.semi_btns_f.pack(side="left")
@@ -1311,6 +2006,7 @@ class QuizApp(tk.Tk):
                 if target == "FINAL" and b == self.btn_final: is_active = True
                 if target == "EXTRA" and b == self.btn_extra: is_active = True
                 if target == "SF_FOLLOW" and b == self.btn_sf_follow: is_active = True
+                if target == "TIMER_ONLY" and b == self.btn_timer_only: is_active = True
             else:
                 if b["text"] == target: is_active = True
             
@@ -1321,12 +2017,15 @@ class QuizApp(tk.Tk):
             elif b == self.btn_final: base_col = "#dc143c"
             elif b == self.btn_extra: base_col = "#2e8b57"
             elif b == self.btn_sf_follow: base_col = "#4682b4"
+            elif b == self.btn_timer_only: base_col = "#20b2aa"
             
             b.config(bg="#555" if is_active else base_col)
         
         self.refresh_ui()
 
     def get_current_mode_players(self):
+        if self.mode == "TIMER_ONLY":
+            return []
         if self.mode in ["10by10", "Swedish10", "Freeze10", "10up-down"]:
             selected = [self.players_3rd_20[i] for i, c_idx in self.player_selections_3rd.items() if COURSES[c_idx] == self.mode]
             return sorted(selected, key=lambda x: x["rank_num"])[:5]
@@ -1336,38 +2035,60 @@ class QuizApp(tk.Tk):
         return self.all_groups_data[self.current_group_idx]
 
     def load_all_csv(self):
-        fp = filedialog.askopenfilename(filetypes=[("CSV Files", "*.csv")])
+        fp = filedialog.askopenfilename(
+            filetypes=[
+                ("Data Files", "*.csv;*.xlsx"),
+                ("CSV Files", "*.csv"),
+                ("Excel Files", "*.xlsx"),
+            ]
+        )
         if not fp: return
+        try:
+            rows = self._read_rows_from_file(fp)
+        except Exception as e:
+            messagebox.showerror("読込エラー", f"ファイルを読み込めませんでした。\n{e}")
+            return
+
         success = False
-        for enc in ['utf-8-sig', 'shift_jis', 'cp932', 'utf-8']:
-            try:
-                with open(fp, "r", encoding=enc) as f:
-                    reader = csv.reader(f)
-                    for row in reader:
-                        if not row: continue
-                        if len(row) == 1: row = row[0].replace('"', '').split(',')
-                        if len(row) < 3: continue
-                        match = re.search(r'\d+', str(row[0]))
-                        if match:
-                            r_num = int(match.group())
-                            g_idx = (r_num - 1) % 4
-                            p_idx = (r_num - 1) // 4
-                            if 0 <= g_idx < NUM_GROUPS and 0 <= p_idx < 12:
-                                self.all_groups_data[g_idx][p_idx]["univ"] = str(row[1])
-                                self.all_groups_data[g_idx][p_idx]["name"] = str(row[2])
-                                success = True
-                    if success: break
-            except Exception: continue 
+        for row in rows:
+            if len(row) < 3: 
+                continue
+            match = re.search(r"\d+", str(row[0]))
+            if match:
+                r_num = int(match.group())
+                g_idx = (r_num - 1) % 4
+                p_idx = (r_num - 1) // 4
+                if 0 <= g_idx < NUM_GROUPS and 0 <= p_idx < 12:
+                    self.all_groups_data[g_idx][p_idx]["univ"] = str(row[1])
+                    self.all_groups_data[g_idx][p_idx]["name"] = str(row[2])
+                    success = True
+
+        if not success:
+            messagebox.showwarning("読込結果", "有効な参加者データを見つけられませんでした。")
         self.refresh_ui()
 
     def load_questions_csv(self):
-        fp = filedialog.askopenfilename(filetypes=[("CSV Files", "*.csv")])
-        if fp:
-            try:
-                with open(fp, "r", encoding='utf-8-sig') as f:
-                    self.questions = [{"q": r[0], "a": r[1]} for r in csv.reader(f) if len(r) >= 2]
-                self.current_q_idx = 0; self.refresh_ui()
-            except: pass
+        fp = filedialog.askopenfilename(
+            filetypes=[
+                ("Data Files", "*.csv;*.xlsx"),
+                ("CSV Files", "*.csv"),
+                ("Excel Files", "*.xlsx"),
+            ]
+        )
+        if not fp:
+            return
+        try:
+            rows = self._read_rows_from_file(fp)
+            self.questions = [{"q": r[0], "a": r[1]} for r in rows if len(r) >= 2]
+            self.current_q_idx = 0
+            self.question_display_started = False
+            if self.questions:
+                self.next_q_target_var.set("1" if len(self.questions) == 1 else "2")
+            else:
+                self.next_q_target_var.set("")
+            self.refresh_ui()
+        except Exception as e:
+            messagebox.showerror("読込エラー", f"問題ファイルを読み込めませんでした。\n{e}")
 
     # --- 修正: W/Lボタンの処理を汎用化 ---
     def act_win_lose(self, idx, status):
@@ -1409,6 +2130,18 @@ class QuizApp(tk.Tk):
                       p["win_order_Swedish10"] = len([pl for pl in players if pl["win_order_Swedish10"] > 0]) + 1
             elif status == "lose":
                 p["Swedish10_x"] = 10 # 失格条件
+
+        elif self.mode == "Freeze10":
+            if status == "win":
+                p["Freeze10_o"] = 10
+                p["Freeze10_x"] = 0
+                p["Freeze10_freeze"] = 0
+                if p["win_order_Freeze10"] == 0:
+                    p["win_order_Freeze10"] = len([pl for pl in players if pl["win_order_Freeze10"] > 0]) + 1
+            elif status == "lose":
+                p["Freeze10_x"] = 10
+                p["Freeze10_freeze"] = 0
+                p["win_order_Freeze10"] = 0
         
         elif self.mode == "10up-down":
             if status == "win":
@@ -1484,11 +2217,7 @@ class QuizApp(tk.Tk):
                     p["win_order_Swedish10"] = len([pl for pl in players if pl["win_order_Swedish10"] > 0]) + 1
                 advance = True
             elif t == "x":
-                pen = 0; sc = p["Swedish10_o"]
-                if sc == 0: pen = 1
-                elif 1 <= sc <= 2: pen = 2
-                elif 3 <= sc <= 5: pen = 3
-                elif 6 <= sc <= 9: pen = 4
+                pen = get_swedish10_wrong_increment(p["Swedish10_o"])
                 p["Swedish10_x"] += pen
                 advance = True
             elif t == "r":
@@ -1575,8 +2304,60 @@ class QuizApp(tk.Tk):
             
         self.refresh_ui()
 
+    def _get_status_suffix(self, p):
+        mode = self.mode
+        if mode == "SCORE" or isinstance(mode, int):
+            if p.get("win_order", 0) > 0:
+                return " [WIN]"
+            if p.get("wrong", 0) >= LOSE_WRONGS:
+                return " [LOSE]"
+            return ""
+        if mode == "10by10":
+            if p.get("win_order_10by10", 0) > 0:
+                return " [WIN]"
+            if p.get("10by10_x", 10) <= 4:
+                return " [LOSE]"
+            return ""
+        if mode == "Swedish10":
+            if p.get("win_order_Swedish10", 0) > 0:
+                return " [WIN]"
+            if p.get("Swedish10_x", 0) >= 10:
+                return " [LOSE]"
+            return ""
+        if mode == "Freeze10":
+            if p.get("win_order_Freeze10", 0) > 0:
+                return " [WIN]"
+            if p.get("Freeze10_x", 0) >= 10:
+                return " [LOSE]"
+            return ""
+        if mode == "10up-down":
+            if p.get("win_order_10up-down", 0) > 0:
+                return " [WIN]"
+            if p.get("10up-down_wrong", 0) >= 2:
+                return " [LOSE]"
+            return ""
+        if mode == "SEMI":
+            if p.get("semi_status") == "win":
+                return " [WIN]"
+            if p.get("semi_status") == "lose":
+                return " [LOSE]"
+            return ""
+        if mode == "FINAL":
+            if p.get("win_order_final", 0) > 0:
+                return " [WIN]"
+            if p.get("final_set_lost", False):
+                return " [LOSE]"
+            return ""
+        if mode == "EXTRA":
+            if p.get("win_order_extra", 0) > 0:
+                return " [WIN]"
+            if p.get("extra_wrong", 0) >= 1:
+                return " [LOSE]"
+            return ""
+        return ""
+
     def _process_end_of_question(self, players):
-        if self.mode in ["10by10", "Swedish10", "Freeze10", "10up-down", "SEMI", "FINAL", "EXTRA"]:
+        if self.mode in ["10by10", "Swedish10", "Freeze10", "10up-down", "SEMI", "FINAL", "EXTRA", "SCORE"] or isinstance(self.mode, int):
             self._advance_q()
             if self.mode == "Freeze10":
                 for p in players:
@@ -1586,7 +2367,21 @@ class QuizApp(tk.Tk):
             pass
 
     def _advance_q(self):
-        if self.questions: self.current_q_idx = (self.current_q_idx + 1) % len(self.questions)
+        if not self.questions:
+            return
+        if not self.question_display_started:
+            self.question_display_started = True
+            if self.next_q_manual_mode_var.get():
+                manual_next_no = self._get_manual_next_question_no()
+                if manual_next_no is not None:
+                    self.current_q_idx = manual_next_no - 1
+            return
+        if self.next_q_manual_mode_var.get():
+            manual_next_no = self._get_manual_next_question_no()
+            if manual_next_no is not None:
+                self.current_q_idx = manual_next_no - 1
+                return
+        self.current_q_idx = (self.current_q_idx + 1) % len(self.questions)
 
     def undo(self): 
         # 修正: キーの判定ロジックを修正 ("SCORE" または int の場合は current_group_idx をキーにする)
@@ -1601,6 +2396,7 @@ class QuizApp(tk.Tk):
             last = stack.pop()
             restored_players = last["players"]
             self.current_q_idx = last["q_idx"]
+            self.question_display_started = last.get("question_started", self.question_display_started)
             
             # 各モードの変数に書き戻す
             if self.mode in ["10by10", "Swedish10", "Freeze10", "10up-down"]:
@@ -1642,7 +2438,8 @@ class QuizApp(tk.Tk):
             
         self.history_stacks[key].append({
             "players": copy.deepcopy(target_list), 
-            "q_idx": self.current_q_idx
+            "q_idx": self.current_q_idx,
+            "question_started": self.question_display_started
         })
 
     def schedule_image_update(self):
@@ -1652,23 +2449,43 @@ class QuizApp(tk.Tk):
     def update_preview_image(self):
         if self.view_frame is None or not self.view_frame.winfo_exists():
             return
-        if self.mode == "3RD":
-            pil_img = self.drawer.generate_image_3rd_round(self.players_3rd_20, self.current_selected_course_name_3rd, self.player_selections_3rd)
+        show_question_text = bool(self.questions) and self.question_display_started and self.question_visible_var.get()
+        timer_blink_on = self.timer_blink_on if self.timer_seconds == 0 else True
+        obs_overlay = self.obs_overlay_var.get()
+        if self.mode == "TIMER_ONLY":
+            pil_img = self.drawer.generate_image_timer_only(
+                timer_str=self.get_timer_str(),
+                timer_alert=(self.timer_seconds == 0),
+                timer_blink_on=timer_blink_on,
+            )
+        elif self.mode == "3RD":
+            pil_img = self.drawer.generate_image_3rd_round(
+                self.players_3rd_20,
+                self.current_selected_course_name_3rd,
+                self.player_selections_3rd,
+            )
         elif self.mode == "SF_FOLLOW":
-            pil_img = self.drawer.generate_image_sf_follow(self.questions, self.sf_follow_start, self.sf_follow_end, self.sf_follow_cursor)
+            pil_img = self.drawer.generate_image_sf_follow(
+                self.questions,
+                self.sf_follow_start,
+                self.sf_follow_end,
+                self.sf_follow_cursor,
+                show_question_text=show_question_text,
+            )
         else:
             players = self.get_current_mode_players()
-            if self.questions:
+            if show_question_text:
                 try:
                     q = self.questions[self.current_q_idx]["q"]
                     a = self.questions[self.current_q_idx]["a"]
                 except IndexError:
-                    q, a = "問題", "解答"
+                    q, a = "", ""
             else:
-                q, a = "問題", "解答"
+                q, a = "", ""
             
             t_str = self.get_timer_str()
             t_alert = (self.timer_seconds == 0)
+            final_set_idx = self.get_current_final_set_index()
             pil_img = self.drawer.generate_image(
                 players,
                 self.current_group_idx,
@@ -1678,10 +2495,13 @@ class QuizApp(tk.Tk):
                 timer_alert=t_alert,
                 mode="2R" if self.mode=="SCORE" or isinstance(self.mode, int) else self.mode,
                 semi_set_idx=self.semi_set_idx,
+                final_set_idx=final_set_idx,
                 sf_hide_scores=self.sf_hide_scores,
-                obs_overlay=self.obs_overlay_var.get(),
+                obs_overlay=obs_overlay,
                 question_index=self.current_q_idx + 1,
                 show_timer=self.timer_visible_var.get(),
+                show_question_text=show_question_text,
+                timer_blink_on=timer_blink_on,
             )
         
         w = self.view_frame.winfo_width()
